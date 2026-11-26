@@ -1033,15 +1033,6 @@ async function boot(){
 
   renderAuthScreen();
 }
-
-  const { data: { session } } = await sb.auth.getSession();
-  if(session && session.user){
-    await hydrateForUser(session.user);
-    render();
-  }else{
-    renderAuthScreen();
-  }
-}
 boot();
 })();
 </script>
