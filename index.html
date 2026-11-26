@@ -131,7 +131,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 'use strict';
 (function(){
 /* ---------- Supabase & remote control config ---------- */
-const SUPABASE_URL = 'https://mjxtpohouybxvxnbryyq.supabase.co/rest/v1/';
+const SUPABASE_URL = 'https://mjxtpohouybxvxnbryyq.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_S4P-d5shnyXdEOhiFJ9wFg_fd4pNfdz';
 const IMAGE_BUCKET = 'shop-images';
 const sb = (SUPABASE_URL.indexOf('http') === 0 && SUPABASE_ANON_KEY && SUPABASE_ANON_KEY !== 'YOUR_SUPABASE_ANON_KEY')
@@ -998,22 +998,41 @@ A.wipe=()=>{if(!canUse('editStock')){toast('الأدوات متوقفة حالي
 /* ---------- boot ---------- */
 function seed(){S.depts=[{id:uid(),name:'دهانات',icon:'paint',img:null},{id:uid(),name:'كهربا',icon:'bolt',img:null},{id:uid(),name:'سباكة',icon:'drop',img:null},{id:uid(),name:'حديد',icon:'iron',img:null}];flush()}
 async function boot(){
-  const allowed = await checkRemoteAccess();
-  if(!allowed) return;
+  try{
+    const allowed = await checkRemoteAccess();
+    if(!allowed) return;
+  }catch(e){}
+
   try{
     db=await openDB();
     await idbLoadAllImgs();
   }catch(e){persist=false;db=null}
+
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
 
   if(!sb){
-    const st=persist&&db?await idbGet('kv','state').catch(()=>null):null;
-    if(st)S=Object.assign(emptyState(),st);
-    if(!S.depts.length)seed();
+    try{
+      const st=persist&&db?await idbGet('kv','state').catch(()=>null):null;
+      if(st)S=Object.assign(emptyState(),st);
+      if(!S.depts.length)seed();
+    }catch(e){}
     currentUser={email:'وضع محلي'};
     render();
     return;
   }
+
+  try{
+    const { data } = await sb.auth.getSession();
+    const session = data && data.session;
+    if(session && session.user){
+      await hydrateForUser(session.user);
+      render();
+      return;
+    }
+  }catch(e){}
+
+  renderAuthScreen();
+}
 
   const { data: { session } } = await sb.auth.getSession();
   if(session && session.user){
