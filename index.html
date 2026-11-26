@@ -7,8 +7,6 @@
 <style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;800&family=Tajawal:wght@400;500;700&display=swap">
 <style>
-/* Layout: phone-first shop manager. Four bottom tabs (stock, sale, report, customers) + more.
-   Departments are large logo tiles; products are photo cards; details open in bottom sheets. */
 :root{
   --bg:#eef1f4; --surface:#ffffff; --ink:#15212c; --muted:#5d6b78; --line:#d9dfe5;
   --accent:#f2b100; --on-accent:#1a1400; --accent-soft:#fff1c2; --tile:#e3e8ed;
@@ -115,21 +113,31 @@ textarea{border-radius:12px;border:1px solid var(--line);background:var(--surfac
 .hero{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:14px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(140px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:999px;z-index:60;font-weight:700;max-width:90%;text-align:center}
 .pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.syncbar{display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px 12px;margin-bottom:10px;font-size:.88rem}
 @media (prefers-reduced-motion:no-preference){.ov{animation:fade .15s ease-out}@keyframes fade{from{opacity:0}to{opacity:1}}}
 </style>
 </head>
 <body>
 
-<div id="app"><main id="main"></main></div>
+<div id="app"><main id="main"><div class="empty">جاري التحميل...</div></main></div>
 <div id="cartbar" class="cartbar" hidden></div>
 <nav class="nav" id="nav" aria-label="التنقل"></nav>
 <div id="ov" class="ov" hidden></div>
 <div id="toast" class="toast" hidden role="status"></div>
 
-<script>
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+
 'use strict';
 (function(){
-/* ---------- remote access & feature control ---------- */
+/* ---------- Supabase & remote control config ---------- */
+const SUPABASE_URL = 'https://mjxtpohouybxvxnbryyq.supabase.co/rest/v1/';
+const SUPABASE_ANON_KEY = 'sb_publishable_S4P-d5shnyXdEOhiFJ9wFg_fd4pNfdz';
+const IMAGE_BUCKET = 'shop-images';
+const sb = (SUPABASE_URL.indexOf('http') === 0 && SUPABASE_ANON_KEY && SUPABASE_ANON_KEY !== 'YOUR_SUPABASE_ANON_KEY')
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+
 const CONTROL_URL = 'https://gist.githubusercontent.com/Engtamernagi/f42080a8cb70ecc70e7ed9d1eae0e49b/raw/shop-control.json';
 let ACCESS = {
   active: true,
@@ -205,11 +213,13 @@ const PATHS={
 const ic=(n,s)=>'<svg width="'+(s||24)+'" height="'+(s||24)+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(PATHS[n]||PATHS.box)+'</svg>';
 
 /* ---------- state ---------- */
-let S={depts:[],products:[],purchases:[],invoices:[],customers:[],payments:[],salaries:[],invSeq:0,shop:''};
+const emptyState=()=>({depts:[],products:[],purchases:[],invoices:[],customers:[],payments:[],salaries:[],invSeq:0,shop:'',imgUrls:{}});
+let S=emptyState();
 let V={tab:'stock',dept:null,q:'',period:'today',cart:[],cur:null};
 const newCO=()=>({type:'cash',cust:'',newName:'',phone:'',disc:'',paid:''});
 let CO=newCO();
-let F=null, DF=null, persist=true, db=null, saveT=null;
+let F=null, DF=null, persist=true, db=null, saveT=null, cloudT=null;
+let currentUser=null, authMode='login', syncStatus='جاهز';
 const imgCache={}, imgBlobs={};
 
 const D=id=>S.depts.find(d=>d.id===id);
@@ -217,8 +227,14 @@ const P_=id=>S.products.find(p=>p.id===id);
 const C_=id=>S.customers.find(c=>c.id===id);
 const low=p=>p.qty<=(p.min||0);
 function bal(cid){let b=0;S.invoices.forEach(i=>{if(i.cust===cid&&!i.cancelled)b+=i.total-i.paid});S.payments.forEach(p=>{if(p.cust===cid)b-=p.amount});return b}
+function getImgSrc(id){
+  if(!id)return null;
+  if(imgCache[id])return imgCache[id];
+  if(S.imgUrls&&S.imgUrls[id])return S.imgUrls[id];
+  return null;
+}
 
-/* ---------- storage (IndexedDB) ---------- */
+/* ---------- storage (IndexedDB + Supabase Cloud) ---------- */
 function openDB(){return new Promise((res,rej)=>{if(!window.indexedDB){rej(new Error('no idb'));return}const r=indexedDB.open('shop-app',1);r.onupgradeneeded=()=>{const d=r.result;d.createObjectStore('kv');d.createObjectStore('img')};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
 function idb(store,mode,fn){return new Promise((res,rej)=>{const tx=db.transaction(store,mode);const st=tx.objectStore(store);const rq=fn(st);tx.oncomplete=()=>res(rq&&rq.result);tx.onerror=()=>rej(tx.error);tx.onabort=()=>rej(tx.error)})}
 const idbGet=(s,k)=>idb(s,'readonly',st=>st.get(k));
@@ -244,14 +260,134 @@ function idbLoadAllImgs(){
     tx.onabort=()=>rej(tx.error);
   });
 }
-function flush(){if(!persist||!db)return;try{idbPut('kv','state',S).catch(()=>{persist=false})}catch(e){persist=false}}
-function save(){clearTimeout(saveT);saveT=setTimeout(flush,120)}
-document.addEventListener('visibilitychange',()=>{if(document.hidden)flush()});
-window.addEventListener('pagehide',flush);
 
-async function addImage(blob){const id=uid();imgBlobs[id]=blob;imgCache[id]=URL.createObjectURL(blob);if(persist&&db){try{await idbPut('img',id,blob)}catch(e){persist=false}}return id}
-function delImage(id){if(!id)return;if(imgCache[id])URL.revokeObjectURL(imgCache[id]);delete imgCache[id];delete imgBlobs[id];if(persist&&db){idbDel('img',id).catch(()=>{})}}
+async function uploadImageToCloud(id, blob){
+  if(!sb || !currentUser || !blob)return null;
+  const path = currentUser.id + '/' + id + '.jpg';
+  const { error } = await sb.storage.from(IMAGE_BUCKET).upload(path, blob, {
+    contentType: blob.type || 'image/jpeg',
+    upsert: true
+  });
+  if(error)throw error;
+  const { data } = sb.storage.from(IMAGE_BUCKET).getPublicUrl(path);
+  return data && data.publicUrl ? data.publicUrl : null;
+}
+
+async function deleteImageFromCloud(id){
+  if(!sb || !currentUser || !id)return;
+  const path = currentUser.id + '/' + id + '.jpg';
+  await sb.storage.from(IMAGE_BUCKET).remove([path]).catch(()=>{});
+}
+
+async function pushCloudState(){
+  if(!sb || !currentUser)return;
+  syncStatus='جاري المزامنة...';
+  renderSyncBar();
+  try{
+    if(!S.imgUrls)S.imgUrls={};
+    for(const id of Object.keys(imgBlobs)){
+      if(!S.imgUrls[id]){
+        const url = await uploadImageToCloud(id, imgBlobs[id]);
+        if(url)S.imgUrls[id]=url;
+      }
+    }
+    const { error } = await sb.from('user_states').upsert({
+      user_id: currentUser.id,
+      state: S,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'user_id' });
+    if(error)throw error;
+    syncStatus='محفوظ على السحابة';
+  }catch(e){
+    syncStatus='تعذرت المزامنة';
+  }
+  renderSyncBar();
+}
+
+function scheduleCloudSave(){
+  if(!sb || !currentUser)return;
+  clearTimeout(cloudT);
+  cloudT=setTimeout(pushCloudState, 500);
+}
+
+function flush(){
+  if(persist&&db){
+    try{idbPut('kv','state',S).catch(()=>{persist=false})}catch(e){persist=false}
+  }
+  scheduleCloudSave();
+}
+function save(){clearTimeout(saveT);saveT=setTimeout(flush,120)}
+document.addEventListener('visibilitychange',()=>{if(document.hidden){flush();pushCloudState()}});
+window.addEventListener('pagehide',()=>{flush();pushCloudState()});
+
+async function addImage(blob){
+  const id=uid();
+  imgBlobs[id]=blob;
+  imgCache[id]=URL.createObjectURL(blob);
+  if(persist&&db){try{await idbPut('img',id,blob)}catch(e){persist=false}}
+  if(sb && currentUser){
+    try{
+      const url=await uploadImageToCloud(id, blob);
+      if(url){
+        if(!S.imgUrls)S.imgUrls={};
+        S.imgUrls[id]=url;
+      }
+    }catch(e){}
+  }
+  return id;
+}
+function delImage(id){
+  if(!id)return;
+  if(imgCache[id])URL.revokeObjectURL(imgCache[id]);
+  delete imgCache[id];
+  delete imgBlobs[id];
+  if(S.imgUrls)delete S.imgUrls[id];
+  if(persist&&db){idbDel('img',id).catch(()=>{})}
+  deleteImageFromCloud(id);
+}
 function resizeImage(file,max){max=max||560;return new Promise((res,rej)=>{const url=URL.createObjectURL(file);const im=new Image();im.onload=()=>{const k=Math.min(1,max/Math.max(im.width,im.height));const w=Math.round(im.width*k),h=Math.round(im.height*k);const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(im,0,0,w,h);c.toBlob(b=>{URL.revokeObjectURL(url);b?res(b):rej(new Error('blob'))},'image/jpeg',0.78)};im.onerror=()=>{URL.revokeObjectURL(url);rej(new Error('img'))};im.src=url})}
+
+/* ---------- auth & cloud hydration ---------- */
+function hasLocalShopData(st){
+  if(!st)return false;
+  return Boolean((st.products&&st.products.length)||(st.invoices&&st.invoices.length)||(st.customers&&st.customers.length)||(st.purchases&&st.purchases.length)||(st.salaries&&st.salaries.length)||st.shop);
+}
+
+async function hydrateForUser(user){
+  currentUser = user;
+  let localState = null;
+  if(persist&&db){
+    try{localState = await idbGet('kv','state')}catch(e){}
+  }
+  let cloudRow = null;
+  if(sb){
+    const { data, error } = await sb
+      .from('user_states')
+      .select('state, updated_at')
+      .eq('user_id', user.id)
+      .maybeSingle();
+    if(!error && data && data.state)cloudRow = data.state;
+  }
+
+  if(cloudRow){
+    S = Object.assign(emptyState(), cloudRow);
+    if(!S.imgUrls)S.imgUrls={};
+    if(!S.depts.length)seed();
+    if(persist&&db){try{await idbPut('kv','state',S)}catch(e){}}
+    syncStatus='متصل بالسحابة';
+  }else{
+    if(localState && hasLocalShopData(localState)){
+      S = Object.assign(emptyState(), localState);
+      if(!S.imgUrls)S.imgUrls={};
+      if(!S.depts.length)seed();
+      await pushCloudState();
+    }else{
+      S = emptyState();
+      seed();
+      await pushCloudState();
+    }
+  }
+}
 
 /* ---------- ui primitives ---------- */
 let sheetClose=null;
@@ -264,6 +400,28 @@ function ask(o){
   window.__ask=o;
 }
 
+/* ---------- auth screen ---------- */
+function renderAuthScreen(){
+  const b=$('#cartbar'); if(b) b.hidden=true;
+  const n=$('#nav'); if(n) n.innerHTML='';
+  const isSignup = authMode === 'signup';
+  const cfgMissing = !sb;
+  $('#main').innerHTML =
+    '<div class="top"><h1>مخزن المحل</h1></div>' +
+    (cfgMissing ? '<div class="alert"><span>أضف رابط ومفتاح Supabase في الكود لتفعيل الدخول السحابي.</span></div>' : '') +
+    '<div class="hero">' +
+      '<h2 style="margin-bottom:6px">'+(isSignup?'إنشاء حساب جديد':'تسجيل الدخول')+'</h2>' +
+      '<p style="margin:0 0 14px;color:var(--muted)">ادخل بإيميلك وكلمة المرور للوصول لبيانات مخزنك من أي جهاز.</p>' +
+      '<div class="chips" style="margin-bottom:14px">' +
+        '<button type="button" class="chip" data-act="authMode" data-m="login" aria-pressed="'+(!isSignup)+'">تسجيل الدخول</button>' +
+        '<button type="button" class="chip" data-act="authMode" data-m="signup" aria-pressed="'+isSignup+'">إنشاء حساب جديد</button>' +
+      '</div>' +
+      '<div class="fld"><label for="auth_email">البريد الإلكتروني</label><input id="auth_email" type="email" autocomplete="email" placeholder="name@example.com"></div>' +
+      '<div class="fld"><label for="auth_pass">كلمة المرور</label><input id="auth_pass" type="password" autocomplete="'+(isSignup?'new-password':'current-password')+'" placeholder="••••••••"></div>' +
+      '<button type="button" class="btn pri block" id="auth_submit" data-act="authSubmit">'+(isSignup?'إنشاء الحساب':'دخول')+'</button>' +
+    '</div>';
+}
+
 /* ---------- views ---------- */
 const TABS=[['stock','المخزن'],['sale','البيع'],['report','الجرد'],['cust','العملاء'],['more','المزيد']];
 function renderNav(){$('#nav').innerHTML=TABS.map(t=>'<button data-act="tab" data-t="'+t[0]+'" aria-current="'+(V.tab===t[0])+'">'+ic(t[0],24)+'<span>'+t[1]+'</span></button>').join('')}
@@ -273,14 +431,23 @@ function renderCartBar(){
   if(V.tab==='sale'&&V.cart.length&&canUse('sale')){b.hidden=false;b.innerHTML='<button class="btn pri" data-act="openCart"><span>الفاتورة · '+V.cart.length+' صنف</span><span>'+money(cartSub())+'</span></button>'}
   else b.hidden=true;
 }
+function syncBarHTML(){
+  if(!currentUser)return '';
+  return '<div class="syncbar"><span>حساب: <b>'+esc(currentUser.email||'')+'</b> · <small id="sync_st">'+esc(syncStatus)+'</small></span><button type="button" class="btn" style="min-height:36px;padding:0 12px;font-size:.85rem" data-act="logout">خروج</button></div>';
+}
+function renderSyncBar(){
+  const el=$('#sync_st');
+  if(el)el.textContent=syncStatus;
+}
 function render(){
+  if(!currentUser){renderAuthScreen();return}
   const v={stock:viewStock,sale:viewSale,report:viewReport,cust:viewCust,more:viewMore}[V.tab];
-  $('#main').innerHTML=v();
+  $('#main').innerHTML=syncBarHTML()+v();
   renderNav();renderCartBar();
 }
 const topBar=(t,back)=>'<div class="top">'+(back?'<button class="iconbtn" data-act="back" aria-label="رجوع">'+ic('back')+'</button>':'')+'<h1>'+esc(t)+'</h1></div>';
 const searchBox=()=>'<div class="fld"><input id="q" type="search" placeholder="ابحث باسم المنتج" value="'+esc(V.q)+'" data-inp="q" autocomplete="off"></div>';
-function logo(d){const u=d.img&&imgCache[d.img];return '<div class="logo">'+(u?'<img src="'+u+'" alt="">':ic(d.icon||'box',44))+'</div>'}
+function logo(d){const u=getImgSrc(d.img);return '<div class="logo">'+(u?'<img src="'+u+'" alt="">':ic(d.icon||'box',44))+'</div>'}
 function deptGrid(mode){
   const canEdit=canUse('editStock');
   let h='<div class="grid">';
@@ -292,7 +459,7 @@ function deptGrid(mode){
   return h+'</div>';
 }
 function prodCard(p,mode){
-  const u=p.imgs.map(i=>imgCache[i]).find(Boolean);
+  const u=p.imgs.map(i=>getImgSrc(i)).find(Boolean);
   return '<div class="pc" role="button" tabindex="0" data-act="'+(mode==='sale'?'sellProd':'showProd')+'" data-id="'+p.id+'"><div class="ph">'+(u?'<img src="'+u+'" alt="">':ic('box',40))+(low(p)?'<i class="tag">'+(p.qty<=0?'خلص':'قرب يخلص')+'</i>':'')+'</div><div class="info"><b>'+esc(p.name)+'</b>'+(mode==='sale'?'<small>'+money(p.sell)+' · متاح '+fmt(p.qty)+'</small>':'')+'</div></div>';
 }
 function resHTML(mode){
@@ -373,14 +540,14 @@ function viewMore(){
     h+=sl2.length?'<div class="list">'+sl2.slice(0,15).map(x=>'<div class="li tap" data-act="salRow" data-id="'+x.id+'"><div class="grow"><b>'+esc(x.name)+'</b><br><small>'+fdate(x.date)+(x.note?' · '+esc(x.note):'')+'</small></div><b class="num">'+money(x.amount)+'</b></div>').join('')+'</div>':'<div class="empty">لسه مفيش مرتبات اتصرفت.</div>';
   }
   if(canUse('backup')){
-    h+='<h2 class="sec">النسخة الاحتياطية</h2><p style="margin:0 0 10px;color:var(--muted)">البيانات والصور محفوظة على الجهاز ده بس. خد نسخة بشكل دوري عشان لو الجهاز ضاع أو اتفرمت.</p><div class="btns" style="margin-top:0"><button class="btn" data-act="backup">نسخ احتياطي</button><button class="btn" data-act="restore">استرجاع</button></div>';
+    h+='<h2 class="sec">النسخة الاحتياطية</h2><p style="margin:0 0 10px;color:var(--muted)">بياناتك بتتحفظ تلقائياً على السحابة وجهازك، وممكن تاخد نسخة JSON يدوية في أي وقت.</p><div class="btns" style="margin-top:0"><button class="btn" data-act="backup">نسخ احتياطي</button><button class="btn" data-act="restore">استرجاع</button></div>';
   }
   h+='<h2 class="sec">الموردين</h2>';
   h+=sl.length?'<div class="list">'+sl.map(n=>'<div class="li"><div class="grow"><b>'+esc(n)+'</b><br><small>'+sups[n].n+' توريد · آخر مرة '+fdate(sups[n].d).slice(0,10)+'</small></div><b class="num">'+money(sups[n].t)+'</b></div>').join('')+'</div>':'<div class="empty">هتظهر هنا لما تسجل مشتريات باسم المورد.</div>';
   if(canUse('editStock')){
     h+='<h2 class="sec">أدوات</h2><div class="btns" style="margin-top:0">'+(hasDemo?'<button class="btn full" data-act="rmDemo">حذف المنتجات التجريبية</button>':'')+'<button class="btn danger full" data-act="wipe">مسح كل البيانات</button></div>';
   }
-  if(!persist)h+='<p class="neg">تنبيه: المتصفح مش سامح بحفظ البيانات، وهتضيع لما تقفل الصفحة.</p>';
+  if(!persist)h+='<p class="neg">تنبيه: التخزين المحلي غير متاح في المتصفح الحالي.</p>';
   return h;
 }
 
@@ -399,6 +566,49 @@ document.addEventListener('change',e=>{const t=e.target.closest('[data-chg]');if
 document.addEventListener('input',e=>{const t=e.target.closest('[data-inp]');if(t&&I[t.dataset.inp])I[t.dataset.inp](t,t.dataset)});
 I.q=t=>{V.q=t.value;const r=$('#res');if(r)r.innerHTML=resHTML(V.tab==='sale'?'sale':'stock')};
 const top0=()=>window.scrollTo(0,0);
+
+A.authMode=d=>{authMode=d.m;renderAuthScreen()};
+A.authSubmit=async()=>{
+  if(!sb){toast('أضف بيانات Supabase أولاً');return}
+  const email=($('#auth_email').value||'').trim();
+  const password=($('#auth_pass').value||'');
+  if(!email||!password){toast('اكتب البريد الإلكتروني وكلمة المرور');return}
+  const btn=$('#auth_submit');if(btn)btn.disabled=true;
+  try{
+    if(authMode==='signup'){
+      const { data, error } = await sb.auth.signUp({ email, password });
+      if(error)throw error;
+      if(data && data.session){
+        await hydrateForUser(data.user);
+        render();
+        toast('تم إنشاء الحساب وتسجيل الدخول');
+      }else{
+        toast('تم إنشاء الحساب! راجع بريدك لتأكيد الحساب ثم سجل الدخول.');
+        authMode='login';
+        renderAuthScreen();
+      }
+    }else{
+      const { data, error } = await sb.auth.signInWithPassword({ email, password });
+      if(error)throw error;
+      await hydrateForUser(data.user);
+      render();
+      toast('تم تسجيل الدخول');
+    }
+  }catch(err){
+    toast(err.message||'تعذر إتمام العملية');
+  }finally{
+    const b2=$('#auth_submit');if(b2)b2.disabled=false;
+  }
+};
+A.logout=async()=>{
+  clearTimeout(saveT);clearTimeout(cloudT);
+  await pushCloudState();
+  if(sb)await sb.auth.signOut().catch(()=>{});
+  currentUser=null;
+  V={tab:'stock',dept:null,q:'',period:'today',cart:[],cur:null};
+  renderAuthScreen();
+};
+
 A.tab=d=>{V.tab=d.t;V.dept=null;V.q='';render();top0()};
 A.openDept=d=>{V.dept=d.id;V.q='';render();top0()};
 A.back=()=>{V.dept=null;V.q='';render();top0()};
@@ -415,7 +625,7 @@ function deptSheet(d){
   dLogoRender();
 }
 function dLogoRender(){
-  const cur=DF.newImg||(!DF.clear&&DF.img);const u=cur&&imgCache[cur];
+  const cur=DF.newImg||(!DF.clear&&DF.img);const u=getImgSrc(cur);
   $('#dlogo').innerHTML=(u?'<div class="thw"><img src="'+u+'" alt=""><button type="button" data-act="dRemLogo" aria-label="حذف اللوجو">×</button></div>':'')+'<label class="addimg">'+ic('camera',26)+'<input type="file" accept="image/*" hidden data-chg="dFile"></label>';
 }
 function dCleanup(){if(DF&&DF.newImg)delImage(DF.newImg);DF=null}
@@ -446,7 +656,7 @@ A.dDel=()=>{
 function supList(){const s={};S.purchases.forEach(p=>{if(p.supplier)s[p.supplier]=1});S.products.forEach(p=>{if(p.supplier)s[p.supplier]=1});return Object.keys(s).map(n=>'<option value="'+esc(n)+'">').join('')}
 const unitOpts=sel=>UNITS.map(u=>'<option'+(u===sel?' selected':'')+'>'+u+'</option>').join('');
 function fImgsRender(){
-  $('#fimgs').innerHTML=F.imgs.map(i=>imgCache[i]?'<div class="thw"><img src="'+imgCache[i]+'" alt=""><button type="button" data-act="fRemImg" data-id="'+i+'" aria-label="حذف الصورة">×</button></div>':'').join('')+'<label class="addimg">'+ic('camera',26)+'<input type="file" accept="image/*" hidden multiple data-chg="fFiles"></label>';
+  $('#fimgs').innerHTML=F.imgs.map(i=>getImgSrc(i)?'<div class="thw"><img src="'+getImgSrc(i)+'" alt=""><button type="button" data-act="fRemImg" data-id="'+i+'" aria-label="حذف الصورة">×</button></div>':'').join('')+'<label class="addimg">'+ic('camera',26)+'<input type="file" accept="image/*" hidden multiple data-chg="fFiles"></label>';
 }
 function prodForm(p){
   if(!canUse('editStock')){toast('التعديل على المخزن متوقف');return}
@@ -490,11 +700,11 @@ A.fSave=()=>{
 };
 A.showProd=d=>{
   const p=P_(d.id);if(!p)return;V.cur=p.id;
-  const imgs=p.imgs.filter(i=>imgCache[i]);
+  const imgs=p.imgs.map(i=>getImgSrc(i)).filter(Boolean);
   const margin=p.buy>0?Math.round((p.sell-p.buy)/p.buy*100):null;
   const hist=S.purchases.filter(x=>x.pid===p.id).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,4);
-  let h='<div class="pmain">'+(imgs.length?'<img id="pmain" src="'+imgCache[imgs[0]]+'" alt="">':ic('box',56))+'</div>';
-  if(imgs.length>1)h+='<div class="thumbs" style="margin-bottom:10px">'+imgs.map(i=>'<img class="th" src="'+imgCache[i]+'" alt="" data-act="pimg" data-src="'+imgCache[i]+'">').join('')+'</div>';
+  let h='<div class="pmain">'+(imgs.length?'<img id="pmain" src="'+imgs[0]+'" alt="">':ic('box',56))+'</div>';
+  if(imgs.length>1)h+='<div class="thumbs" style="margin-bottom:10px">'+imgs.map(src=>'<img class="th" src="'+src+'" alt="" data-act="pimg" data-src="'+src+'">').join('')+'</div>';
   h+='<h2>'+esc(p.name)+(low(p)?' <span class="badge bad">'+(p.qty<=0?'خلص':'قرب يخلص')+'</span>':'')+'</h2><small>'+esc((D(p.dept)||{}).name||'')+'</small>';
   h+='<div style="margin-top:8px"><div class="kv"><span>الكمية المتاحة</span><b>'+fmt(p.qty)+' '+esc(p.unit)+'</b></div><div class="kv"><span>سعر الشراء</span><b>'+money(p.buy)+'</b></div><div class="kv"><span>سعر البيع</span><b>'+money(p.sell)+'</b></div><div class="kv"><span>ربح الوحدة</span><b class="'+(p.sell-p.buy>=0?'pos':'neg')+'">'+money(p.sell-p.buy)+(margin!==null?' ('+margin+'%)':'')+'</b></div><div class="kv"><span>قيمة الموجود (بسعر الشراء)</span><b>'+money(Math.max(p.qty,0)*p.buy)+'</b></div><div class="kv"><span>الحد الأدنى للتنبيه</span><b>'+fmt(p.min)+'</b></div><div class="kv"><span>المورد</span><b>'+esc(p.supplier||'—')+'</b></div></div>';
   if(hist.length)h+='<h3 class="sec" style="margin-top:16px">آخر التوريدات</h3><div class="list">'+hist.map(x=>'<div class="li"><div class="grow"><small>'+fdate(x.date)+(x.supplier?' · '+esc(x.supplier):'')+'</small></div><span class="num">'+fmt(x.qty)+' × '+fmt(x.buy)+'</span></div>').join('')+'</div>';
@@ -546,7 +756,7 @@ A.sellProd=d=>{
   if(!canUse('sale')){toast('ميزة البيع متوقفة حالياً');return}
   const p=P_(d.id);if(!p)return;
   const inCart=(V.cart.find(l=>l.pid===p.id)||{qty:0}).qty;
-  const u=p.imgs.map(i=>imgCache[i]).find(Boolean);
+  const u=p.imgs.map(i=>getImgSrc(i)).find(Boolean);
   openSheet('<div class="li" style="padding:0 0 12px"><div class="logo" style="width:64px;height:64px;border-radius:12px;flex:none">'+(u?'<img src="'+u+'" alt="">':ic('box',28))+'</div><div class="grow"><h2 style="margin:0">'+esc(p.name)+'</h2><small>متاح '+fmt(p.qty-inCart)+' '+esc(p.unit)+'</small></div></div>'
    +'<div class="fld"><label for="s_qty">الكمية ('+esc(p.unit)+')</label><div class="step"><button class="iconbtn" data-act="qtyD" data-d="-1" aria-label="أقل">−</button><input id="s_qty" inputmode="decimal" value="1" autocomplete="off"><button class="iconbtn" data-act="qtyD" data-d="1" aria-label="أكتر">+</button></div></div>'
    +'<div class="fld"><label for="s_price">سعر الوحدة</label><input id="s_price" inputmode="decimal" value="'+p.sell+'"></div>'
@@ -633,11 +843,18 @@ A.finish=()=>{
 function normPhone(v){let p=String(v||'').replace(/[٠-٩]/g,d=>AD.indexOf(d)).replace(/\D/g,'');if(p.indexOf('00')===0)p=p.slice(2);else if(p.charAt(0)==='0')p='20'+p.slice(1);else if(p.length===10&&p.charAt(0)==='1')p='20'+p;return p}
 function waLink(inv,phone){
   const c=inv.cust?C_(inv.cust):null;
-  let t=(S.shop||'المحل')+'\nفاتورة رقم '+inv.no+' · '+fdate(inv.date)+'\n';
-  inv.items.forEach(i=>{t+='- '+i.name+': '+fmt(i.qty)+' '+i.unit+' × '+fmt(i.price)+' = '+fmt(i.qty*i.price)+'\n'});
-  if(inv.discount>0)t+='الخصم: '+fmt(inv.discount)+'\n';
-  t+='الإجمالي: '+fmt(inv.total)+' ج\n';
-  if(inv.type==='credit')t+='المدفوع: '+fmt(inv.paid)+' ج\nالمتبقي: '+fmt(inv.total-inv.paid)+' ج\n';
+  let t=(S.shop||'المحل')+'
+فاتورة رقم '+inv.no+' · '+fdate(inv.date)+'
+';
+  inv.items.forEach(i=>{t+='- '+i.name+': '+fmt(i.qty)+' '+i.unit+' × '+fmt(i.price)+' = '+fmt(i.qty*i.price)+'
+'});
+  if(inv.discount>0)t+='الخصم: '+fmt(inv.discount)+'
+';
+  t+='الإجمالي: '+fmt(inv.total)+' ج
+';
+  if(inv.type==='credit')t+='المدفوع: '+fmt(inv.paid)+' ج
+المتبقي: '+fmt(inv.total-inv.paid)+' ج
+';
   t+='شكراً لتعاملكم';
   const ph=normPhone(phone!=null?phone:(inv.phone||(c&&c.phone)||''));
   return 'https://wa.me/'+ph+'?text='+encodeURIComponent(t);
@@ -765,7 +982,8 @@ A.xGo=()=>{
   ask({msg:'هتتمسح البيانات الحالية وتتبدل بالنسخة دي. متأكد؟',ok:'استرجاع',danger:true,no:()=>{},yes:async()=>{
     try{
       Object.keys(imgBlobs).forEach(delImage);if(db)await idbClear('img');
-      S=Object.assign({depts:[],products:[],purchases:[],invoices:[],customers:[],payments:[],salaries:[],invSeq:0,shop:''},o.state);
+      S=Object.assign(emptyState(),o.state);
+      if(!S.imgUrls)S.imgUrls={};
       if(o.imgs)for(const id of Object.keys(o.imgs)){const b=dataURLToBlob(o.imgs[id]);imgBlobs[id]=b;imgCache[id]=URL.createObjectURL(b);if(db)await idbPut('img',id,b)}
       if(!S.depts.length)seed();
       V={tab:'stock',dept:null,q:'',period:'today',cart:[],cur:null};CO=newCO();flush();render();toast('تم الاسترجاع');
@@ -774,7 +992,7 @@ A.xGo=()=>{
 };
 A.wipe=()=>{if(!canUse('editStock')){toast('الأدوات متوقفة حالياً');return}ask({title:'مسح كل البيانات',msg:'هتتمسح كل المنتجات والفواتير والعملاء والصور ومفيش رجوع. اعمل نسخة احتياطية الأول لو محتاجها.',ok:'امسح كله',danger:true,no:()=>{},yes:async()=>{
   Object.keys(imgBlobs).forEach(delImage);try{if(db){await idbClear('img');await idbClear('kv')}}catch(e){}
-  S={depts:[],products:[],purchases:[],invoices:[],customers:[],payments:[],salaries:[],invSeq:0,shop:''};seed();V={tab:'more',dept:null,q:'',period:'today',cart:[],cur:null};CO=newCO();render();toast('تم المسح');
+  S=emptyState();seed();V={tab:'more',dept:null,q:'',period:'today',cart:[],cur:null};CO=newCO();save();render();toast('تم المسح');
 }})};
 
 /* ---------- boot ---------- */
@@ -784,12 +1002,26 @@ async function boot(){
   if(!allowed) return;
   try{
     db=await openDB();
-    const st=await idbGet('kv','state');if(st)S=Object.assign(S,st);
     await idbLoadAllImgs();
   }catch(e){persist=false;db=null}
-  if(!S.depts.length)seed();
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
-  render();
+
+  if(!sb){
+    const st=persist&&db?await idbGet('kv','state').catch(()=>null):null;
+    if(st)S=Object.assign(emptyState(),st);
+    if(!S.depts.length)seed();
+    currentUser={email:'وضع محلي'};
+    render();
+    return;
+  }
+
+  const { data: { session } } = await sb.auth.getSession();
+  if(session && session.user){
+    await hydrateForUser(session.user);
+    render();
+  }else{
+    renderAuthScreen();
+  }
 }
 boot();
 })();
