@@ -843,18 +843,11 @@ A.finish=()=>{
 function normPhone(v){let p=String(v||'').replace(/[٠-٩]/g,d=>AD.indexOf(d)).replace(/\D/g,'');if(p.indexOf('00')===0)p=p.slice(2);else if(p.charAt(0)==='0')p='20'+p.slice(1);else if(p.length===10&&p.charAt(0)==='1')p='20'+p;return p}
 function waLink(inv,phone){
   const c=inv.cust?C_(inv.cust):null;
-  let t=(S.shop||'المحل')+'
-فاتورة رقم '+inv.no+' · '+fdate(inv.date)+'
-';
-  inv.items.forEach(i=>{t+='- '+i.name+': '+fmt(i.qty)+' '+i.unit+' × '+fmt(i.price)+' = '+fmt(i.qty*i.price)+'
-'});
-  if(inv.discount>0)t+='الخصم: '+fmt(inv.discount)+'
-';
-  t+='الإجمالي: '+fmt(inv.total)+' ج
-';
-  if(inv.type==='credit')t+='المدفوع: '+fmt(inv.paid)+' ج
-المتبقي: '+fmt(inv.total-inv.paid)+' ج
-';
+  let t=(S.shop||'المحل')+'\nفاتورة رقم '+inv.no+' · '+fdate(inv.date)+'\n';
+  inv.items.forEach(i=>{t+='- '+i.name+': '+fmt(i.qty)+' '+i.unit+' × '+fmt(i.price)+' = '+fmt(i.qty*i.price)+'\n'});
+  if(inv.discount>0)t+='الخصم: '+fmt(inv.discount)+'\n';
+  t+='الإجمالي: '+fmt(inv.total)+' ج\n';
+  if(inv.type==='credit')t+='المدفوع: '+fmt(inv.paid)+' ج\nالمتبقي: '+fmt(inv.total-inv.paid)+' ج\n';
   t+='شكراً لتعاملكم';
   const ph=normPhone(phone!=null?phone:(inv.phone||(c&&c.phone)||''));
   return 'https://wa.me/'+ph+'?text='+encodeURIComponent(t);
@@ -1029,7 +1022,9 @@ async function boot(){
       render();
       return;
     }
-  }catch(e){}
+  }catch(e){
+    currentUser=null;
+  }
 
   renderAuthScreen();
 }
